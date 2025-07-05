@@ -52,10 +52,19 @@ $config = [
         */
     ],
     'params' => $params,
+    'modules' => [
+        'v1' => [
+            'class' => 'app\modules\v1\Module',
+        ],
+    ],
 ];
 
 if (YII_ENV_DEV) {
     // configuration adjustments for 'dev' environment
+    // Ensure 'modules' key exists before trying to add to it for debug/gii
+    if (!isset($config['modules'])) {
+        $config['modules'] = [];
+    }
     $config['bootstrap'][] = 'debug';
     $config['modules']['debug'] = [
         'class' => 'yii\debug\Module',
