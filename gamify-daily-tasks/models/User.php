@@ -18,7 +18,8 @@ use app\models\StatsCategory; // Corrected from StatsCategories
  * @property string $username
  * @property string $password_hash
  * @property string $email
- * @property string|null $auth_key // Added for IdentityInterface
+ * @property string|null $auth_key     // For "remember me" and IdentityInterface
+ * @property string|null $access_token // For API authentication
  * @property int|null $created_at
  * @property int|null $updated_at
  *
@@ -59,11 +60,14 @@ class User extends ActiveRecord implements IdentityInterface
         return [
             [['username', 'email'], 'required'],
             [['username', 'email'], 'string', 'max' => 255],
+            [['auth_key'], 'string', 'max' => 32],
+            [['access_token'], 'string', 'max' => 255], // Max length for access_token
             [['username'], 'unique'],
             [['email'], 'unique'],
+            [['access_token'], 'unique'],
             [['email'], 'email'],
-            [['password'], 'string', 'min' => 6, 'on' => 'register'], // Password required on registration scenario
-            [['password_hash'], 'required', 'except' => 'register'], // hash required unless it's registration scenario
+            [['password'], 'string', 'min' => 6, 'on' => ['register', 'create']], // Password required on registration/create scenario
+            [['password_hash'], 'required', 'except' => ['register', 'create']],
         ];
     }
 
@@ -77,6 +81,8 @@ class User extends ActiveRecord implements IdentityInterface
             'username' => 'Username',
             'password_hash' => 'Password Hash',
             'email' => 'Email',
+            'auth_key' => 'Auth Key',
+            'access_token' => 'Access Token',
             'created_at' => 'Created At',
             'updated_at' => 'Updated At',
         ];
@@ -89,7 +95,9 @@ class User extends ActiveRecord implements IdentityInterface
      */
     public function getStatCategories()
     {
-        return $this->hasMany(StatsCategories::class, ['id' => 'stat_category_id'])->viaTable('user_stats', ['user_id' => 'id']);
+        // Note: Corrected class name from StatsCategories to StatsCategory if that's the actual class name.
+        // Assuming StatsCategory is the correct class name based on previous model refinements.
+        return $this->hasMany(StatsCategory::class, ['id' => 'stat_category_id'])->viaTable('{{%user_stats}}', ['user_id' => 'id']);
     }
 
     /**
@@ -99,7 +107,7 @@ class User extends ActiveRecord implements IdentityInterface
      */
     public function getTasks()
     {
-        return $this->hasMany(Tasks::class, ['user_id' => 'id']);
+        return $this->hasMany(Task::class, ['user_id' => 'id']);
     }
 
     /**
@@ -109,7 +117,7 @@ class User extends ActiveRecord implements IdentityInterface
      */
     public function getUserStats()
     {
-        return $this->hasMany(UserStats::class, ['user_id' => 'id']);
+        return $this->hasMany(UserStat::class, ['user_id' => 'id']);
     }
 
     /**
@@ -125,7 +133,7 @@ class User extends ActiveRecord implements IdentityInterface
      */
     public static function findIdentityByAccessToken($token, $type = null)
     {
-        throw new NotSupportedException('"findIdentityByAccessToken" is not implemented.');
+        return static::findOne(['access_token' => $token]);
     }
 
     /**
@@ -152,9 +160,7 @@ class User extends ActiveRecord implements IdentityInterface
      */
     public function getAuthKey()
     {
-        // If you add an 'auth_key' column to your users table:
-        // return $this->auth_key;
-        return null; // Or implement auth_key generation and storage
+        return $this->auth_key;
     }
 
     /**
@@ -162,9 +168,7 @@ class User extends ActiveRecord implements IdentityInterface
      */
     public function validateAuthKey($authKey)
     {
-        // If you add an 'auth_key' column to your users table:
-        // return $this->getAuthKey() === $authKey;
-        return true; // Modify if using auth_key
+        return $this->getAuthKey() === $authKey;
     }
 
     /**
@@ -194,25 +198,47 @@ class User extends ActiveRecord implements IdentityInterface
      */
     public function generateAuthKey()
     {
-        // If you add an 'auth_key' column to your users table:
-        // $this->auth_key = Yii::$app->security->generateRandomString();
+        $this->auth_key = Yii::$app->security->generateRandomString();
+    }
+
+    /**
+     * Generates new access token
+     * @throws \yii\base\Exception
+     */
+    public function generateAccessToken()
+    {
+        $this->access_token = Yii::$app->security->generateRandomString() . '_' . time();
+    }
+
+    /**
+     * Removes access token
+     */
+    public function removeAccessToken()
+    {
+        $this->access_token = null;
     }
 
     /**
      * Before saving, hash password if it's a new record or password is changed.
+     * Also generate auth_key for new records.
      */
     public function beforeSave($insert)
     {
         if (parent::beforeSave($insert)) {
-            if ($this->isNewRecord || $this->isAttributeChanged('password')) {
-                 if (!empty($this->password)) { // Only hash if password is set
-                    $this->setPassword($this->password);
-                 } elseif ($this->isNewRecord && empty($this->password_hash)) {
-                    // This case should ideally be caught by validation (e.g. password required on register)
-                    // For safety, prevent saving a new user without any password info.
-                    $this->addError('password', 'Password cannot be blank for a new user.');
-                    return false;
-                 }
+            if ($insert) { // For new records (isNewRecord is true)
+                if (empty($this->auth_key)) {
+                    $this->generateAuthKey();
+                }
+            }
+            // Hash password if it's set (for new record or if password attribute changed)
+            if (!empty($this->password)) {
+                if ($this->isNewRecord || $this->isAttributeChanged('password_hash') || $this->getOldAttribute('password_hash') !== Yii::$app->security->generatePasswordHash($this->password, Yii::$app->params['passwordHashCost'] ?? null) ) { // A bit more robust check if password actually changed
+                     $this->setPassword($this->password);
+                }
+            } elseif ($this->isNewRecord && empty($this->password_hash)) {
+                // This should be caught by rules for 'register' or 'create' scenarios
+                $this->addError('password', 'Password cannot be blank for a new user.');
+                return false;
             }
             return true;
         }
